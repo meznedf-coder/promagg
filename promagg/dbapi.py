@@ -14,6 +14,7 @@ import sqlglot
 from sqlglot import exp
 
 from promagg import duck
+from promagg.allmetrics import AllMetrics, build_meta
 from promagg.client import PromClient
 from promagg.errors import (  # noqa: F401  (re-exported)
     DatabaseError,
@@ -68,7 +69,9 @@ def connect(host: str = "localhost", port: int | None = None, user: str | None =
       separated), request_timeout (s), concurrency (parallel queries), max_points,
       max_samples, scrape_interval ("15s", for $__rate_interval), allow_promql, counters (metric
       name patterns that are counters without a _total suffix or metadata, e.g. node_vmstat_*),
-      now (tests).
+      all_metrics (name of the table of every metric, default "all_metrics"; empty: none),
+      all_metrics_labels (its label columns: a comma-separated list, or how many at most, 300),
+      all_metrics_max (metrics one query on it may read, 50), now (tests).
     """
     return Connection(host=host, port=port, user=user, password=password, **kwargs)
 
@@ -107,6 +110,11 @@ class Connection:
         self.max_samples = int(kw.get("max_samples", 1_000_000))
         self.scrape_interval_ms = parse_duration(str(kw.get("scrape_interval", "15s")))
         self.allow_promql = _bool(kw.get("allow_promql"), True)
+        self.all_metrics = str(kw.get("all_metrics", "all_metrics") or "").strip()
+        labels = str(kw.get("all_metrics_labels", "") or "").strip()
+        self.all_metrics_labels = [x.strip() for x in labels.split(",") if x.strip()] if not labels.isdigit() else []
+        self.all_metrics_max_labels = int(labels) if labels.isdigit() else 300
+        self.all_metrics_max = int(kw.get("all_metrics_max", 50))
         self.fixed_now = kw.get("now")
         # metadata is shared by connections with the same credentials only (a wrong password must
         # not answer from what a right one read)
@@ -163,7 +171,16 @@ class Connection:
         return self.schema.metric_names()
 
     def table_meta(self, name: str) -> MetricMeta | None:
+        if self.all_metrics and name == self.all_metrics:
+            return build_meta(name, self.schema.all_labels(), self.all_metrics_labels, self.all_metrics_max_labels)
         return self.schema.meta(name)
+
+    def rewrite(self, stmt: Any) -> Any:
+        """Queries on the all_metrics table -> queries on the metrics' own tables (allmetrics.py)."""
+        if not self.all_metrics:
+            return stmt
+        return AllMetrics(self.all_metrics, lambda: self.table_meta(self.all_metrics), self.list_tables,
+                          self.schema.meta, self.schema.label_values_all, self.all_metrics_max).rewrite(stmt)
 
     def settings(self) -> Settings:
         return Settings(zone=self.zone, now_ms=self.now_ms(), default_range_ms=self.default_range_ms,
@@ -261,7 +278,7 @@ class Cursor:
             return row[0]
 
         planner = Planner(c.table_meta, c.settings(), const_eval)
-        return planner.plan(stmt)
+        return planner.plan(c.rewrite(stmt))
 
     def _execute_one(self, stmt: exp.Expression) -> None:
         t_start = time.perf_counter()

@@ -43,6 +43,14 @@ from promagg.timegrid import (DAY, DUCKDB_MONTH_ORIGIN, DUCKDB_ORIGIN, HOUR, MIN
 SCAN_PREFIX = "__promagg_scan_"
 SPLIT_WHOLE_RANGE_MS = 2 * DAY          # longer ranges without time bucket: computed per day
 FROM_KEY = "from_" if "from_" in exp.Select.arg_types else "from"
+# functions that take one part of a timestamp (sqlglot 26 / 27, Superset 5.0 / 6.0, have no Hour,
+# Minute, Second: HOUR(ts) is then an anonymous function, read like DATE_PART)
+TIME_PART_UNITS = {getattr(exp, name): unit for name, unit in (
+    ("Hour", "hour"), ("Minute", "minute"), ("Second", "second"), ("Day", "day"), ("Month", "month"),
+    ("Year", "year"), ("Quarter", "quarter"), ("DayOfWeek", "dow"), ("DayOfMonth", "day"), ("DayOfYear", "doy"),
+    ("Week", "week")) if hasattr(exp, name)}
+TIME_PARTS = tuple(TIME_PART_UNITS)
+REGEXPS = tuple(getattr(exp, n) for n in ("RegexpLike", "RegexpFullMatch") if hasattr(exp, n))   # 26 / 27: no FullMatch
 
 # SQL name -> (PromQL function, scalar args before the range vector, scalar args after)
 RANGE_FUNCS: dict[str, tuple[str, int, int]] = {
@@ -666,7 +674,7 @@ class Planner:
             return pq.regex(label, rx)
         if isinstance(c, exp.Escape) and isinstance(c.this, (exp.Like, exp.ILike)):
             return None
-        if isinstance(c, (exp.RegexpLike, exp.RegexpFullMatch)):
+        if isinstance(c, REGEXPS):
             label = ctx.label_of(c.this)
             if label is None or not is_constant(c.expression) or c.args.get("flag") is not None:
                 return None
@@ -773,12 +781,11 @@ class Planner:
             u = node.expressions[0]
             unit = (self.const_eval(u) if is_constant(u) else "")
             unit, arg = str(unit).lower(), node.expressions[1]
-        elif isinstance(node, (exp.Hour, exp.Minute, exp.Second, exp.Day, exp.Month, exp.Year, exp.Quarter,
-                               exp.DayOfWeek, exp.DayOfMonth, exp.DayOfYear, exp.Week)):
-            unit = {exp.Hour: "hour", exp.Minute: "minute", exp.Second: "second", exp.Day: "day",
-                    exp.Month: "month", exp.Year: "year", exp.Quarter: "quarter", exp.DayOfWeek: "dow",
-                    exp.DayOfMonth: "day", exp.DayOfYear: "doy", exp.Week: "week"}[type(node)]
-            arg = node.this
+        elif isinstance(node, TIME_PARTS):
+            unit, arg = TIME_PART_UNITS[type(node)], node.this
+        elif isinstance(node, exp.Anonymous) and node.name.lower() in ("hour", "minute", "second") \
+                and len(node.expressions) == 1:
+            unit, arg = node.name.lower(), node.expressions[0]           # sqlglot 26 / 27
         if unit is None or arg is None:
             return None
         g_arg = self.grain_of(arg, ctx)
@@ -1566,8 +1573,7 @@ def _time_expr_top(col: exp.Column) -> exp.Expression:
                           exp.Predicate, exp.Connector, exp.Not, exp.AggFunc, exp.Filter, exp.Case, exp.If)):
             break
         if isinstance(p, (exp.Paren, exp.TimestampTrunc, exp.DateTrunc, exp.DateBin, exp.Cast, exp.Extract,
-                          exp.Anonymous, exp.Add, exp.Sub, exp.Hour, exp.Minute, exp.Second, exp.Day, exp.Month,
-                          exp.Year, exp.Quarter, exp.DayOfWeek, exp.DayOfMonth, exp.DayOfYear, exp.Week, exp.Interval)):
+                          exp.Anonymous, exp.Add, exp.Sub, exp.Interval) + TIME_PARTS):
             others = [c for c in p.find_all(exp.Column) if c is not col]
             if others:
                 break

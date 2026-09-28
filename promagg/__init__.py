@@ -23,4 +23,4 @@ from promagg.dbapi import (  # noqa: F401
     threadsafety,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

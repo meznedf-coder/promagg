@@ -139,7 +139,8 @@ class PromAggDialect(default.DefaultDialect):
         return schema_name in (None, "default")
 
     def get_table_names(self, connection, schema=None, **kw) -> list[str]:
-        return self._raw(connection).list_tables()
+        raw = self._raw(connection)
+        return ([raw.all_metrics] if raw.all_metrics else []) + raw.list_tables()   # one dataset: every metric
 
     def has_table(self, connection, table_name, schema=None, **kw) -> bool:
         return self._raw(connection).table_meta(table_name) is not None
@@ -189,7 +190,9 @@ class PromAggDialect(default.DefaultDialect):
     def get_table_comment(self, connection, table_name, schema=None, **kw) -> dict[str, Any]:
         meta = self._raw(connection).table_meta(table_name)
         text = None
-        if meta is not None:
+        if meta is not None and meta.kind == "all":
+            text = "Every metric: filter metric_name (one dataset for all the metrics)"
+        elif meta is not None:
             text = f"Prometheus {meta.kind}" + (f": {meta.help}" if meta.help else "")
         return {"text": text}
 

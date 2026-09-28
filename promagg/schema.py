@@ -150,6 +150,23 @@ class Schema:
             self._metas[name] = (time.time(), meta)
         return meta
 
+    def all_labels(self) -> list[str]:
+        """Every label name of the schema window (the columns of all_metrics)."""
+        with self._lock:
+            hit = self._metas.get("\0labels")
+            if hit and time.time() - hit[0] < self.ttl:
+                return hit[1]  # type: ignore[return-value]
+        start, end = self._range()
+        names = sorted(lb for lb in self.client.label_names(None, start, end) if lb != "__name__")
+        with self._lock:
+            self._metas["\0labels"] = (time.time(), names)  # type: ignore[assignment]
+        return names
+
+    def label_values_all(self, label: str) -> list[str]:
+        """The values of a label over every metric of the schema window (all_metrics filter boxes)."""
+        start, end = self._range()
+        return sorted(self.client.label_values(label, None, start, end))
+
     def invalidate(self) -> None:
         with self._lock:
             self._names = None

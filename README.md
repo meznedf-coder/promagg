@@ -38,6 +38,9 @@ Settings > Database Connections > + Database > **Prometheus / Mimir (PromQL push
 | max_samples | 1,000,000 | raw samples a row query may read |
 | scrape_interval | 15s | for `$__rate_interval` in promql() |
 | allow_promql | true | allow the promql() table function (it needs database access in Superset) |
+| all_metrics | `all_metrics` | name of the table that holds every metric (see below); empty: no such table |
+| all_metrics_labels | 300 | its label columns: a comma-separated list (`job,instance,node`), or how many at most |
+| all_metrics_max | 50 | metrics one query on it may read |
 | verify_certs, ca_certs, client_cert, client_key | | TLS |
 
 ### Several tenants (Mimir tenant federation)
@@ -101,6 +104,34 @@ One table per metric name (also as `promagg.<metric>`, `prometheus.<metric>`, `m
 | one per label | VARCHAR | NULL when the series lacks the label |
 | `value` | DOUBLE | sample value |
 | `rate`, `increase` | DOUBLE | counters only: per-second rate / increase **per series and time bucket** |
+
+### One dataset for every metric: all_metrics
+
+With thousands of metrics, one Superset dataset per metric is not practical. The table
+`all_metrics` (schema `default`, listed first) holds them all: create **one dataset** on it and
+choose the metric with a filter (a dashboard native filter on `metric_name`, or a chart filter).
+
+| column | type | |
+|---|---|---|
+| `ts` | TIMESTAMP | as in a metric table |
+| `metric_name` | VARCHAR | the metric: **filter it** (`= 'x'`, `IN (...)`, `LIKE 'node_%'`) |
+| one per label | VARCHAR | every label name of the database (`all_metrics_labels` lists or caps them); NULL for the metrics without it |
+| `value`, `rate`, `increase` | DOUBLE | as in a metric table (`rate`, `increase`: counters only) |
+
+A query names its metrics in WHERE, with conditions on `metric_name` alone; it becomes the same
+query on each metric's own table, so the PromQL (and the result) is exactly the one of the
+metric's table:
+
+* one metric: that query;
+* several metrics (at most `all_metrics_max`): one query per metric, `UNION ALL`; an aggregate
+  must then `GROUP BY metric_name` (charts: add *metric_name* to the dimensions);
+* no metric filter: the filter lists only (`metric_name` values, or the values of one label,
+  from the label index); anything else is refused, since it would read every metric;
+* `SUM(rate)` / `SUM(increase)` of a gauge is refused with the reason; a virtual dataset
+  `SELECT * FROM all_metrics WHERE ...` is still pushed down.
+
+Tools that check SQL per metric table (for example supagent's refusal of `SUM(value)` on a
+counter) do not see through `all_metrics`: they apply to the metric tables.
 
 ## SQL -> PromQL
 

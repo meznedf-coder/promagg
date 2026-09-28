@@ -1,5 +1,21 @@
 # Changes
 
+## 0.2.0 — 28 Sep 2026
+
+* **One dataset for every metric**: the table `all_metrics` (schema `default`, listed first)
+  holds every metric, with `metric_name`, one column per label of the database, `value`,
+  `rate` and `increase`. A query filters the metric (`metric_name = 'x'`, `IN`, `LIKE`) and
+  becomes the same query on each metric's own table (the same PromQL); several metrics are
+  one query each, `UNION ALL`, grouped by `metric_name`. Filter lists (`metric_name`, one
+  label) come from the label index; a query without a metric filter, or `rate` of a gauge, is
+  refused with the reason. Connection parameters `all_metrics` (its name, or none),
+  `all_metrics_labels` (a list, or at most N label columns, 300) and `all_metrics_max` (50).
+  The metric tables and the DB-API `list_tables()` are unchanged.
+* Superset 6.0 / 5.0 (sqlglot 27 / 26): queries whose time expressions or label filters went
+  through `HOUR()` / `MINUTE()` / `SECOND()` or a regular expression failed with
+  `AttributeError: module 'sqlglot.expressions' has no attribute ...`; fixed (the test suite
+  now runs on sqlglot 26, 27 and 28).
+
 ## 0.1.0 — 27 Sep 2026
 
 First version: Prometheus / Grafana Mimir as a SQL database for Superset.
