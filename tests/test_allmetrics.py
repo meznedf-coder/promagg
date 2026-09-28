@@ -102,3 +102,18 @@ def test_a_virtual_dataset_on_it_is_still_pushed_down():
                  f"metric_name = 'node_load1') AS virtual_table WHERE {T} GROUP BY 1")
     p, _ex = plan(sql)
     assert len(p.scans) == 1 and p.scans[0].mode == "A"                # aggregated in Prometheus
+
+
+def test_filter_boxes_read_only_what_their_limit_shows():
+    many = AllMetrics("all_metrics", lambda: build_meta("all_metrics", LABELS), lambda: sorted(METRICS), METRICS.get,
+                      lambda label: [f"srv-{i:05d}" for i in range(50000)], 50)
+
+    def listed(sql):
+        return many.rewrite(sqlglot.parse_one(sql, read="duckdb")).sql(dialect="duckdb").count("'srv-")
+
+    assert listed("SELECT node FROM all_metrics GROUP BY node ORDER BY node LIMIT 100") == 100
+    assert listed("SELECT DISTINCT node FROM all_metrics LIMIT 10 OFFSET 5") == 15
+    desc = many.rewrite(sqlglot.parse_one("SELECT node FROM all_metrics GROUP BY node ORDER BY node DESC LIMIT 2",
+                                          read="duckdb")).sql(dialect="duckdb")
+    assert "'srv-49999'" in desc and "'srv-00000'" not in desc
+    assert listed("SELECT node FROM all_metrics GROUP BY node") == 50000        # no LIMIT: every value

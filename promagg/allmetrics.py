@@ -361,6 +361,7 @@ class AllMetrics:
             values = self.label_values(spec.label)
         else:
             raise refused
+        values = self._first(select, column, values)
         b = select.copy()
         if values:
             rows = [exp.Tuple(expressions=[exp.Literal.string(v)]) for v in values]
@@ -375,6 +376,31 @@ class AllMetrics:
                     if not any(col.name == "ts" and mine(col) for col in c.find_all(exp.Column))]
             b.set("where", exp.Where(this=exp.and_(*keep)) if keep else None)
         return b
+
+    @staticmethod
+    def _first(select: exp.Select, column: str, values: list[str]) -> list[str]:
+        """Only the values the query can return: with a LIMIT and no ORDER BY, or ORDER BY the listed
+        column, the first (or last) LIMIT + OFFSET of the sorted list (a filter box over tens of
+        thousands of values stays fast); the query's own ORDER BY / LIMIT still apply."""
+        limit, offset, order = (select.args.get(k) for k in ("limit", "offset", "order"))
+        lit = limit.expression if limit is not None else None
+        if not (isinstance(lit, exp.Literal) and lit.is_int):
+            return values
+        off = offset.expression if offset is not None else None
+        n = int(lit.this) + (int(off.this) if isinstance(off, exp.Literal) and off.is_int else 0)
+        values = sorted(set(values))
+        if order is None:
+            return values[:n]
+        if len(order.expressions) != 1:
+            return values
+        o = order.expressions[0]
+        key = o.this
+        if isinstance(key, exp.Literal) and key.is_int and int(key.this) == 1 and len(select.expressions) == 1:
+            key = select.expressions[0]
+        key = key.this if isinstance(key, exp.Alias) else key
+        if not (isinstance(key, exp.Column) and key.name in (column, select.expressions[0].alias_or_name)):
+            return values
+        return values[::-1][:n] if o.args.get("desc") else values[:n]
 
     def _empty(self, select: exp.Select, table: exp.Table, alias: str) -> exp.Select:
         """No metric matches: the same query over an empty table with all the columns."""
