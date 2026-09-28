@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "promagg"
+version = "0.1.0"
+description = "Prometheus / Grafana Mimir as a SQL database for Apache Superset: SQL -> PromQL pushdown (DB-API + SQLAlchemy + engine spec)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "sqlglot>=26",
+    "duckdb>=1.1",
+    "pyarrow>=14",
+    "urllib3>=1.26",
+    "sqlalchemy>=1.4,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.entry-points."sqlalchemy.dialects"]
+promagg = "promagg.sqla:PromAggDialect"
+"promagg.http" = "promagg.sqla:PromAggDialect"
+"promagg.https" = "promagg.sqla:PromAggHttpsDialect"
+
+[project.entry-points."superset.db_engine_specs"]
+promagg = "promagg.engine_spec:PromAggEngineSpec"
+
+[tool.setuptools]
+packages = ["promagg"]
