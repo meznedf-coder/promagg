@@ -181,3 +181,41 @@ def test_group_by_raw_time_uses_automatic_buckets():
     p, _ex = plan(f"SELECT ts, node, SUM(value) FROM node_load1 WHERE {T} GROUP BY ts, node")
     scan = p.scans[0]
     assert scan.grain.unit == "fixed" and scan.grain.width_ms == 300_000 and "automatic" in scan.notes[0]
+
+
+def plan_with(sql: str, **kw):
+    con = duckdb.connect()
+    con.execute("SET TimeZone = 'Europe/Paris'")
+    s = Settings(zone=ZONE, now_ms=ZONE.utc_ms(dt.datetime(2026, 9, 25, 6)), **kw)
+    p = Planner(METRICS.get, s, lambda n: con.execute("SELECT " + n.sql(dialect="duckdb")).fetchone()[0]).plan(
+        sqlglot.parse_one(sql, read="duckdb"))
+    ex = Executor(client=None, settings=s)
+    ex._left_open = True
+    return p, [ex.atom_expr(p.scans[0], a, HOUR) for a in p.scans[0].atoms]
+
+
+def test_increases_of_a_bucket_are_exact_with_anchored_ranges():
+    """Prometheus extrapolates rate / increase / delta to the window's edges: per hour and status, a job
+    counter read 284.18 failed jobs for 285 (lab: 82 of 240 hourly cells wrong even rounded). An anchored
+    range (no extrapolation, the sample before the bucket included) gives the counter's increments."""
+    sql = f"SELECT DATE_TRUNC('hour', ts), mode, SUM(INCREASE(value)), SUM(rate) FROM node_cpu_seconds_total WHERE {T} GROUP BY 1, 2"
+    p, e = plan_with(sql, anchored=True)
+    assert e == ['sum by (mode) (increase(node_cpu_seconds_total[1h] anchored offset 1ms))',
+                 'sum by (mode) (rate(node_cpu_seconds_total[1h] anchored offset 1ms))']
+    assert any("exact per bucket" in n for n in p.notes)
+    # an explicit window is Prometheus' sliding one; functions that do not extrapolate are left as they are
+    _p, e = plan_with(f"SELECT DATE_TRUNC('hour', ts), SUM(RATE(value, '5m')), MAX(MAX_OVER_TIME(value)) "
+                      f"FROM node_cpu_seconds_total WHERE {T} GROUP BY 1", anchored=True)
+    assert all("anchored" not in x for x in e)
+    # increase=prometheus keeps the extrapolated values; without anchored ranges auto says so
+    _p, e = plan_with(sql, anchored=True, increase="prometheus")
+    assert all("anchored" not in x for x in e)
+    p, e = plan_with(sql)
+    assert all("anchored" not in x for x in e) and any("extrapolated" in n for n in p.notes)
+
+
+def test_increase_exact_without_anchored_ranges_says_how_to_enable_them():
+    with pytest.raises(ProgrammingError, match="enabled-promql-extended-range-selectors=anchored"):
+        plan_with(f"SELECT SUM(INCREASE(value)) FROM node_cpu_seconds_total WHERE {T}", increase="exact")
+    # a query without them is not concerned
+    plan_with(f"SELECT AVG(value) FROM node_load1 WHERE {T}", increase="exact")

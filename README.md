@@ -38,6 +38,7 @@ Settings > Database Connections > + Database > **Prometheus / Mimir (PromQL push
 | max_samples | 1,000,000 | raw samples a row query may read |
 | scrape_interval | 15s | for `$__rate_interval` in promql() |
 | allow_promql | true | allow the promql() table function (it needs database access in Superset) |
+| increase | auto | `rate`, `increase` and `delta` of a time bucket: `auto` exact (anchored ranges) when the backend allows them, else Prometheus' extrapolated values; `exact` anchored or an error; `prometheus` extrapolated, as Grafana shows them (see Exact increases) |
 | all_metrics | `all_metrics` | name of the table that holds every metric (see below); empty: no such table |
 | all_metrics_labels | 300 | its label columns: a comma-separated list (`job,instance,node`), or how many at most |
 | all_metrics_max | 50 | metrics one query on it may read |
@@ -200,6 +201,31 @@ uses automatic buckets of about 500 points over the time range (15 s ... 1 day),
 are not grouped one by one. Queries over more than two days without a time bucket
 (`SUM(increase)` over a month) are computed per day and added up (for aggregates that add up),
 so the backend never holds a month of chunks for a single evaluation.
+
+### Exact increases
+
+Prometheus computes `rate`, `increase` and `delta` from the samples inside the window and
+extrapolates them to its edges: the hourly increase of a job counter reads 284.18 failed jobs
+for 285, and the increments between the last sample of one bucket and the first of the next
+belong to neither. In the lab, per hour and status, 82 of 240 values were wrong even after
+rounding. With **anchored ranges** (an experimental extended range selector of Prometheus 3 and
+Mimir 3), the sample just before the bucket is included and nothing is extrapolated: the
+increase of a bucket is the sum of the counter's increments in it, resets included, and the
+buckets add up exactly to the day.
+
+promagg uses them by default (`increase=auto`) for `rate`, `increase` and `delta` of a time
+bucket whenever the backend allows them for the tenant, and says which in EXPLAIN. Enable them
+in Mimir with `-query-frontend.enabled-promql-extended-range-selectors=anchored` (or the
+tenant's `enabled_promql_extended_range_selectors` limit). Tested on Mimir 3.2.1: in the lab, 4
+counters on the days around both daylight-saving changes matched the raw samples' increments
+exactly, per hour and label.
+
+One difference remains. When a counter comes back after an interruption of more than 5 minutes
+(Prometheus' lookback) that spans the start of the bucket, the bucket counts from the counter's
+first value after the interruption: what it counted between its restart and its first scrape is
+not included. `increase=exact` refuses to run without anchored ranges, and `increase=prometheus`
+keeps the extrapolated values. Explicit windows (`RATE(value, '5m')`) keep Prometheus' sliding
+semantics.
 
 ### promql(): any PromQL, as a table
 

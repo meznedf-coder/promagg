@@ -70,6 +70,14 @@ RANGE_FUNCS: dict[str, tuple[str, int, int]] = {
 }
 # functions whose values add up over consecutive windows (a SQL group spanning several buckets)
 ADDITIVE = {"increase", "count_over_time", "sum_over_time", "changes", "resets"}
+# extrapolated by Prometheus; exact over a bucket with an anchored range (no extrapolation, the sample
+# before the bucket included)
+ANCHORABLE = {"rate", "increase", "delta"}
+EXACT_UNAVAILABLE = (
+    "increase=exact: this backend does not evaluate anchored ranges for this tenant, which exact increases "
+    "need. Mimir 3: set -query-frontend.enabled-promql-extended-range-selectors=anchored (or the tenant's "
+    "enabled_promql_extended_range_selectors limit); Prometheus 3: enable its experimental extended range "
+    "selectors. Or connect with increase=prometheus (extrapolated values, as Grafana shows them).")
 MATH1 = {exp.Abs: "abs", exp.Ceil: "ceil", exp.Floor: "floor", exp.Exp: "exp", exp.Ln: "ln",
          exp.Sqrt: "sqrt", exp.Sign: "sgn"}
 # aggregate -> operator name used below
@@ -102,6 +110,8 @@ class Settings:
     scrape_interval_ms: int = 15_000       # $__rate_interval of promql()
     allow_promql: bool = True
     schema_window_ms: int | None = None    # where label values are looked up
+    increase: str = "auto"                 # auto | exact | prometheus (rate, increase, delta of a bucket)
+    anchored: bool = False                 # the backend evaluates anchored ranges (exact increases)
 
 
 @dataclass(frozen=True)
@@ -969,6 +979,17 @@ class Planner:
             if part is not None:
                 agg_nodes.extend(aggs_in(part))
         descs = [self._describe_agg(n, ctx) for n in agg_nodes]
+        if any(d.fn is not None and d.fn.func in ANCHORABLE and not d.fn.range_ms for d in descs):
+            if self.s.anchored and self.s.increase != "prometheus":
+                note = ("rate / increase / delta: exact per bucket (anchored ranges: the counter's increments "
+                        "in the bucket, no extrapolation)")
+            elif self.s.increase == "exact":
+                raise ProgrammingError(EXACT_UNAVAILABLE)
+            else:
+                note = ("rate / increase / delta: Prometheus' values, extrapolated to the bucket's edges (not "
+                        "whole numbers, a little off per bucket; exact with anchored ranges, see increase=)")
+            if note not in self.notes:
+                self.notes.append(note)
         for d in descs:
             if d.src in ("distinct", "label"):
                 extra_labels.add(d.label)

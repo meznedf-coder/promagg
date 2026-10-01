@@ -18,7 +18,8 @@ from typing import Any
 from promagg import promql as pq
 from promagg.client import TENANT_LABEL, PromClient, Series
 from promagg.errors import LimitError, OperationalError, ProgrammingError
-from promagg.planner import AggScan, Atom, LabelScan, PromqlScan, RowScan, Settings
+from promagg.planner import (ANCHORABLE, EXACT_UNAVAILABLE, AggScan, Atom, LabelScan, PromqlScan, RowScan,
+                             Settings)
 from promagg.timegrid import HOUR, MINUTE, Bucket, buckets, duration, from_ms
 
 MAX_POINTS_PER_QUERY = 10_000        # Prometheus / Mimir refuse more than 11,000 per series
@@ -53,10 +54,18 @@ class Executor:
             self._left_open = self.client.range_left_open()
         return self._left_open
 
-    def range_sel(self, sel: pq.Selector, window_ms: int) -> str:
-        """Samples in [end - window, end) when evaluated at `end`."""
+    def range_sel(self, sel: pq.Selector, window_ms: int, anchored: bool = False) -> str:
+        """Samples in [end - window, end) when evaluated at `end` (anchored: and the one before)."""
         w = window_ms if self.left_open else window_ms - 1
-        return f"{sel.text()}[{duration(w)}] offset 1ms"
+        return f"{sel.text()}[{duration(w)}]{' anchored' if anchored else ''} offset 1ms"
+
+    def anchor(self, fn) -> bool:
+        """rate / increase / delta of a bucket: exact with an anchored range when the backend has them."""
+        if fn is None or fn.func not in ANCHORABLE or fn.range_ms or self.s.increase == "prometheus":
+            return False
+        if not self.s.anchored and self.s.increase == "exact":
+            raise ProgrammingError(EXACT_UNAVAILABLE)
+        return self.s.anchored
 
     # ------------------------------------------------------------------ #
     def run(self, scan) -> Result:
@@ -149,7 +158,7 @@ class Executor:
                 sel = sel.with_([pq.Matcher(atom.label, "!=", "")])
             fn_window = atom.fn.range_ms if atom.fn is not None and atom.fn.range_ms else window_ms
             if atom.kind in ("fn", "fn_sq", "hq"):
-                r = self.range_sel(sel, fn_window)
+                r = self.range_sel(sel, fn_window, self.anchor(atom.fn))
             else:
                 r = self.range_sel(sel, window_ms)
             k = atom.kind

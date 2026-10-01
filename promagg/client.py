@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 BUSY_RETRY_DELAYS = (0.5, 1.5, 4.0)
 TENANT_LABEL = "__tenant_id__"        # added by Mimir to every series of a multi-tenant query
 RETRY_STATUS = {429, 502, 503, 504}
+ANCHORED_TTL = 600.0                  # seconds a backend's answer to the anchored-range probe is kept
+_ANCHORED: dict[tuple, tuple[float, bool]] = {}
 
 
 class Series(NamedTuple):
@@ -63,6 +65,28 @@ def _series(result_type: str, result: Any) -> tuple[list[Series], int]:
         t, v = result
         out.append(Series({}, [(_ms(t), float(v))]))
     return out, skipped
+
+
+def _floats_only(expr: str, skipped: int) -> None:
+    """Native histogram samples have no float value: leaving them out returned a part of the result."""
+    if skipped:
+        raise ProgrammingError(
+            f"{skipped} sample(s) of the result are native histograms, which have no single value: "
+            "the result would leave them out. Query them with promql() and a function that returns "
+            "numbers (histogram_count, histogram_sum, histogram_quantile, histogram_fraction). "
+            f"Query: {expr[:300]}")
+
+
+def _incomplete(path: str, warnings: list[str]) -> str:
+    return (f"the metrics backend answered {path} with a warning, so the result may be incomplete or "
+            f"wrong: {'; '.join(warnings)[:600]}. No result is returned from it.")
+
+
+def _benign(warning: str) -> bool:
+    """Warnings that do not change a result: PromQL "info" annotations (Prometheus 2 sends them as
+    warnings), and the truncation of label / series lists asked for with limit (existence probes)."""
+    w = str(warning)
+    return w.startswith("PromQL info") or "truncated due to limit" in w
 
 
 class PromClient:
@@ -148,9 +172,18 @@ class PromClient:
         except ValueError:
             payload = None
         if r.status == 200 and isinstance(payload, dict) and payload.get("status") == "success":
+            # a warning says that part of the data was left out (a store or remote read that failed, series
+            # a function dropped): an error here, never a result (infos are only logged)
+            for w in payload.get("infos") or ():
+                logger.debug("promagg: %s: %s", path, w)
+            bad = []
             for w in payload.get("warnings") or ():
-                # "results truncated due to limit": asked for (existence probes with limit=1)
-                (logger.debug if "truncated due to limit" in str(w) else logger.warning)("promagg: %s: %s", path, w)
+                if _benign(w):
+                    logger.debug("promagg: %s: %s", path, w)
+                else:
+                    bad.append(str(w))
+            if bad:
+                raise OperationalError(_incomplete(path, bad))
             return payload.get("data")
         err = (payload or {}).get("error") if isinstance(payload, dict) else None
         err = err or _page_text(text)[:500] or f"HTTP {r.status}"
@@ -179,7 +212,8 @@ class PromClient:
     # ------------------------------------------------------------------ #
     def query(self, expr: str, t_ms: int, timeout: float | None = None) -> list[Series]:
         data = self._call("POST", "/api/v1/query", [("query", expr), ("time", fmt_time(t_ms))], timeout)
-        out, _skipped = _series(data.get("resultType", ""), data.get("result"))
+        out, skipped = _series(data.get("resultType", ""), data.get("result"))
+        _floats_only(expr, skipped)
         return out
 
     def query_range(self, expr: str, start_ms: int, end_ms: int, step_ms: int,
@@ -187,7 +221,8 @@ class PromClient:
         data = self._call("POST", "/api/v1/query_range", [
             ("query", expr), ("start", fmt_time(start_ms)), ("end", fmt_time(end_ms)),
             ("step", fmt_time(step_ms))], timeout)
-        out, _skipped = _series(data.get("resultType", ""), data.get("result"))
+        out, skipped = _series(data.get("resultType", ""), data.get("result"))
+        _floats_only(expr, skipped)
         return out
 
     def label_names(self, match: list[str] | None, start_ms: int | None, end_ms: int | None) -> list[str]:
@@ -270,6 +305,24 @@ class PromClient:
     def rules(self) -> list[dict]:
         """Rule groups of the ruler (with several tenants: each group gets a "tenant" key)."""
         return [{**g, "tenant": t} if t else g for t, g in self._ruler("/api/v1/rules", "groups")]
+
+    def anchored_ok(self) -> bool:
+        """Can this backend, for this tenant, evaluate anchored ranges (the experimental extended range
+        selectors of Prometheus 3 / Mimir 3): rate / increase / delta without extrapolation, the sample
+        before the window included, so that the increase of a bucket is the exact sum of the counter's
+        increments. Asked once per 10 minutes."""
+        key = (self.url, self.tenant)
+        hit = _ANCHORED.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1]
+        t = (int(time.time()) // 60 - 10) * 60 * 1000
+        try:
+            self.query("increase(promagg_anchored_probe[1m] anchored)", t)
+            ok = True
+        except ProgrammingError:                     # 400: "not enabled for tenant", or a parse error
+            ok = False
+        _ANCHORED[key] = (time.monotonic() + ANCHORED_TTL, ok)
+        return ok
 
     def range_left_open(self) -> bool:
         """Range selectors are left-open (t-range, t] in Prometheus 3 / Mimir 3 and closed

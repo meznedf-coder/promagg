@@ -1,5 +1,26 @@
 # Changes
 
+## 0.2.2 — not released (branch dev-0.2.2)
+
+Silent errors in counts and sums, found while reviewing osagg's (see its 0.2.8):
+
+* **Exact increases.** Prometheus extrapolates `rate`, `increase` and `delta` to the window's
+  edges, so the increase of a bucket is a little off: the lab's hourly failed jobs per status
+  were wrong in 82 of 240 hours even after rounding (284.18 for 285). promagg now asks for
+  anchored ranges (no extrapolation, the sample before the bucket included) when the backend
+  allows them for the tenant. Increases per bucket are then the counter's increments, which add
+  up exactly. New parameter `increase` (`auto` by default, `exact`, `prometheus`); EXPLAIN says
+  which is used. In Mimir 3, enable them with
+  `-query-frontend.enabled-promql-extended-range-selectors=anchored`.
+* **A warning is an error.** The backend answers "success" with a warning when part of the data
+  is missing (a store or remote read that failed) or a function dropped series (a malformed
+  `le`, histograms mixed with floats). The warning was only logged, and the incomplete result
+  was returned. It is now an error that quotes the warning. PromQL infos and the truncation of
+  lists promagg asks for are still only logged.
+* **Native histogram samples** have no single value and were left out of the rows without a
+  word. A query that meets them is now an error that points to promql() and the histogram
+  functions.
+
 ## 0.2.1 — 28 Sep 2026
 
 * all_metrics filter lists (metric names, the values of a label) keep only what their LIMIT

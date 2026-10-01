@@ -71,7 +71,9 @@ def connect(host: str = "localhost", port: int | None = None, user: str | None =
       name patterns that are counters without a _total suffix or metadata, e.g. node_vmstat_*),
       all_metrics (name of the table of every metric, default "all_metrics"; empty: none),
       all_metrics_labels (its label columns: a comma-separated list, or how many at most, 300),
-      all_metrics_max (metrics one query on it may read, 50), now (tests).
+      all_metrics_max (metrics one query on it may read, 50), increase ("auto": rate / increase /
+      delta per bucket exact with anchored ranges when the backend has them, else Prometheus'
+      extrapolated values; "exact": anchored or an error; "prometheus": extrapolated), now (tests).
     """
     return Connection(host=host, port=port, user=user, password=password, **kwargs)
 
@@ -110,6 +112,9 @@ class Connection:
         self.max_samples = int(kw.get("max_samples", 1_000_000))
         self.scrape_interval_ms = parse_duration(str(kw.get("scrape_interval", "15s")))
         self.allow_promql = _bool(kw.get("allow_promql"), True)
+        self.increase = str(kw.get("increase", "auto") or "auto").strip().lower()
+        if self.increase not in ("auto", "exact", "prometheus"):
+            raise InterfaceError(f"increase={self.increase!r}: auto, exact or prometheus")
         self.all_metrics = str(kw.get("all_metrics", "all_metrics") or "").strip()
         labels = str(kw.get("all_metrics_labels", "") or "").strip()
         self.all_metrics_labels = [x.strip() for x in labels.split(",") if x.strip()] if not labels.isdigit() else []
@@ -183,10 +188,11 @@ class Connection:
                           self.schema.meta, self.schema.label_values_all, self.all_metrics_max).rewrite(stmt)
 
     def settings(self) -> Settings:
+        anchored = self.increase != "prometheus" and self.client.anchored_ok()
         return Settings(zone=self.zone, now_ms=self.now_ms(), default_range_ms=self.default_range_ms,
                         max_points=self.max_points, max_samples=self.max_samples,
                         scrape_interval_ms=self.scrape_interval_ms, allow_promql=self.allow_promql,
-                        schema_window_ms=self.schema_window_ms)
+                        schema_window_ms=self.schema_window_ms, increase=self.increase, anchored=anchored)
 
 
 class Cursor:
