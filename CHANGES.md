@@ -1,6 +1,6 @@
 # Changes
 
-## 0.2.2 — not released (branch dev-0.2.2)
+## 0.2.2 — 1 Oct 2026
 
 Silent errors in counts and sums, found while reviewing osagg's (see its 0.2.8):
 

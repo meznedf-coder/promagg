@@ -10,7 +10,7 @@ Companion of osagg (the same approach for OpenSearch).
 
 ## Install (pip, nothing in superset_config.py)
 
-    pip install promagg-0.1.0-py3-none-any.whl      # into Superset's virtualenv, restart Superset
+    pip install promagg-0.2.2-py3-none-any.whl      # into Superset's virtualenv, restart Superset
 
 Dependencies are already in Superset: sqlglot, duckdb, pyarrow, urllib3, SQLAlchemy.
 

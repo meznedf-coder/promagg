@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "promagg"
-version = "0.2.2b1"
+version = "0.2.2"
 description = "Prometheus / Grafana Mimir as a SQL database for Apache Superset: SQL -> PromQL pushdown (DB-API + SQLAlchemy + engine spec)"
 readme = "README.md"
 requires-python = ">=3.10"
