@@ -78,3 +78,35 @@ def test_the_anchored_probe_is_kept_per_backend_and_tenant(monkeypatch):
         lambda: Answer({"status": "error", "error": "anchored is not enabled for tenant"}))
     assert not refused.anchored_ok()
     C._ANCHORED.clear()
+
+
+def test_a_failed_anchored_probe_never_fails_a_query(monkeypatch):
+    """Busy, a limit, a warning, a gateway error: no answer about anchored ranges, extrapolated values, asked
+    again a minute later; a query without rate / increase / delta never asks."""
+    from promagg import client as C
+
+    monkeypatch.setattr(C.time, "sleep", lambda s: None)
+    C._ANCHORED.clear()
+    for status, payload in ((503, {"status": "error", "error": "busy"}),
+                            (422, {"status": "error", "error": "the query exceeded the maximum number of samples"}),
+                            (200, {"status": "success", "data": {"resultType": "vector", "result": []},
+                                   "warnings": ["remote_read: connection refused"]})):
+        c = PromClient("http://mimir.invalid:9009/prometheus")
+        c.pool.request = (lambda st, pl: lambda *a, **kw: Answer(pl, st))(status, payload)
+        assert c.anchored_ok() is False
+        assert C._ANCHORED[(c.url, c.tenant)][0] - C.time.monotonic() <= 61
+        C._ANCHORED.clear()
+
+
+def test_the_probe_is_asked_only_by_a_query_that_needs_it():
+    import datetime as dt
+
+    from promagg.planner import Settings
+    from promagg.timegrid import Zone
+
+    asked = []
+    s = Settings(zone=Zone("UTC"), now_ms=0, probe_anchored=lambda: asked.append(1) or True)
+    assert asked == []
+    assert s.anchored_ranges() and s.anchored_ranges() and asked == [1]
+    assert not Settings(zone=Zone("UTC"), now_ms=0, increase="prometheus",
+                        probe_anchored=lambda: asked.append(2) or True).anchored_ranges() and asked == [1]

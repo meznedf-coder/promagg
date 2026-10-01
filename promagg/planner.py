@@ -111,7 +111,16 @@ class Settings:
     allow_promql: bool = True
     schema_window_ms: int | None = None    # where label values are looked up
     increase: str = "auto"                 # auto | exact | prometheus (rate, increase, delta of a bucket)
-    anchored: bool = False                 # the backend evaluates anchored ranges (exact increases)
+    anchored: bool | None = None           # the backend evaluates anchored ranges (None: probe_anchored)
+    probe_anchored: Callable[[], bool] | None = None   # asked only by a query that needs it
+
+    def anchored_ranges(self) -> bool:
+        """rate / increase / delta of a bucket can be exact (asked once, and only when a query needs it)."""
+        if self.increase == "prometheus":
+            return False
+        if self.anchored is None:
+            self.anchored = bool(self.probe_anchored and self.probe_anchored())
+        return self.anchored
 
 
 @dataclass(frozen=True)
@@ -980,7 +989,7 @@ class Planner:
                 agg_nodes.extend(aggs_in(part))
         descs = [self._describe_agg(n, ctx) for n in agg_nodes]
         if any(d.fn is not None and d.fn.func in ANCHORABLE and not d.fn.range_ms for d in descs):
-            if self.s.anchored and self.s.increase != "prometheus":
+            if self.s.anchored_ranges():
                 note = ("rate / increase / delta: exact per bucket (anchored ranges: the counter's increments "
                         "in the bucket, no extrapolation)")
             elif self.s.increase == "exact":

@@ -63,9 +63,9 @@ class Executor:
         """rate / increase / delta of a bucket: exact with an anchored range when the backend has them."""
         if fn is None or fn.func not in ANCHORABLE or fn.range_ms or self.s.increase == "prometheus":
             return False
-        if not self.s.anchored and self.s.increase == "exact":
+        if not self.s.anchored_ranges() and self.s.increase == "exact":
             raise ProgrammingError(EXACT_UNAVAILABLE)
-        return self.s.anchored
+        return self.s.anchored_ranges()
 
     # ------------------------------------------------------------------ #
     def run(self, scan) -> Result:

@@ -188,11 +188,11 @@ class Connection:
                           self.schema.meta, self.schema.label_values_all, self.all_metrics_max).rewrite(stmt)
 
     def settings(self) -> Settings:
-        anchored = self.increase != "prometheus" and self.client.anchored_ok()
         return Settings(zone=self.zone, now_ms=self.now_ms(), default_range_ms=self.default_range_ms,
                         max_points=self.max_points, max_samples=self.max_samples,
                         scrape_interval_ms=self.scrape_interval_ms, allow_promql=self.allow_promql,
-                        schema_window_ms=self.schema_window_ms, increase=self.increase, anchored=anchored)
+                        schema_window_ms=self.schema_window_ms, increase=self.increase,
+                        probe_anchored=self.client.anchored_ok)
 
 
 class Cursor:

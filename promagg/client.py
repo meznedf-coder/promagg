@@ -18,7 +18,7 @@ from typing import Any, NamedTuple
 
 import urllib3
 
-from promagg.errors import LimitError, OperationalError, ProgrammingError
+from promagg.errors import DatabaseError, LimitError, OperationalError, ProgrammingError
 
 logger = logging.getLogger(__name__)
 
@@ -316,12 +316,16 @@ class PromClient:
         if hit is not None and hit[0] > time.monotonic():
             return hit[1]
         t = (int(time.time()) // 60 - 10) * 60 * 1000
+        ttl = ANCHORED_TTL
         try:
             self.query("increase(promagg_anchored_probe[1m] anchored)", t)
             ok = True
         except ProgrammingError:                     # 400: "not enabled for tenant", or a parse error
             ok = False
-        _ANCHORED[key] = (time.monotonic() + ANCHORED_TTL, ok)
+        except DatabaseError as ex:                  # busy, a limit, a warning, unreachable: no answer
+            logger.info("promagg: the anchored-range probe of %s failed (%s): extrapolated values", self.url, ex)
+            ok, ttl = False, 60.0                    # asked again a minute later
+        _ANCHORED[key] = (time.monotonic() + ttl, ok)
         return ok
 
     def range_left_open(self) -> bool:
